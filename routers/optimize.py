@@ -62,6 +62,7 @@ def apply_optimization_and_finalize(payload: OptimizationApprovalPayload, curren
     
     return {
         "message": "Tailored resume generated safely.",
+        "file_name": unique_filename,
         "download_url": cloudinary_download_url,
         "cover_letter": cover_letter
     }

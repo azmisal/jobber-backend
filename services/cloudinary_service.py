@@ -14,6 +14,8 @@ def upload_pdf(file_bytes: bytes, filename: str) -> str:
         file_bytes,
         resource_type="raw",
         public_id=f"resumes/{filename}.pdf",
+        type="upload",
+        access_mode="public",
         invalidate=True
     )
     return response.get("secure_url")
