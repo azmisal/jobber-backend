@@ -1,34 +1,58 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Dict, Any
 
-class ExperienceItem(BaseModel):
-    company: str
-    role: str
-    duration: str
-    bullets: List[str]
+
+class ResumeLink(BaseModel):
+    label: str = ""
+    url: str = ""
+
+
+class ResumeBasics(BaseModel):
+    full_name: str = ""
+    headline: str = ""
+    emails: List[str] = []
+    phones: List[str] = []
+    location: str = ""
+    links: List[ResumeLink] = []
+
+
+class ResumeSection(BaseModel):
+    id: str
+    title: str
+    type: str
+    content: List[Any] = []
+    raw_text: str = ""
+
+
+class ResumeMetadata(BaseModel):
+    section_order: List[str] = []
+    parsing_confidence: float = 0.0
+
 
 class ResumeDataSchema(BaseModel):
-    summary: str
-    skills: List[str]
-    experience: List[ExperienceItem]
-    education: List[str]
+    basics: ResumeBasics
+    sections: List[ResumeSection]
+    metadata: ResumeMetadata
+    raw_resume_text: str = ""
+
 
 class JDSubmission(BaseModel):
     job_description: str
 
+
 class KeywordSelection(BaseModel):
-    """Payload for the selected keywords the user wants injected."""
     selected_keywords: List[str]
     rejected_keywords: List[str] = []
 
+
 class OptimizationProposal(BaseModel):
     id: int
-    section: str # "summary" or "experience"
-    item_index: int # Index of the experience item if applicable
-    bullet_index: Optional[int] = None # Index of the bullet within that experience item
-    original_line: str
-    proposed_line: str
+    section_id: str
+    content_index: int
+    original_text: str
+    proposed_text: str
     keyword_added: str
+
 
 class OptimizationApprovalPayload(BaseModel):
     approved_ids: List[int]

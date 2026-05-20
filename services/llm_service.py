@@ -1,114 +1,315 @@
 import json
+from uuid import uuid4
+
 from openai import OpenAI
 from config.settings import settings
 
 client = OpenAI(
     base_url="https://api.groq.com/openai/v1",
-    api_key=settings.JOBBER_GROQ_API_KEY
+    api_key=settings.JOBBER_GROQ_API_KEY,
 )
 
+
 def parse_resume_to_json(raw_text: str) -> dict:
-    """Converts rough PDF string formats into clean schemas using structured JSON processing."""
+
     prompt = f"""
-    You are an AI specialized in data extraction. Parse this raw resume plain text into a structured JSON file matching this schema layout cleanly:
+You are a universal resume reconstruction engine.
+
+DO NOT summarize heavily.
+
+==================================================
+RULES
+==================================================
+
+1. Preserve ALL sections.
+
+2. Detect section headings dynamically.
+
+3. Preserve:
+- names
+- bullets
+- descriptions
+- metrics
+- dates
+- achievements
+- skills
+- technologies
+- proficiency levels
+- links
+- certifications
+- projects
+- awards
+- publications
+
+4. IMPORTANT:
+Skills should remain compact.
+
+GOOD:
+[
+  "React",
+  "Node.js",
+  "English - Fluent",
+  "German - Intermediate"
+]
+
+BAD:
+[
+  {{
+    "skill": "React",
+    "description": "Frontend framework"
+  }}
+]
+
+5. If entries are simple names/tags:
+keep them as plain strings.
+
+6. ONLY create objects if structured data exists.
+
+7. Preserve unknown/custom sections.
+
+8. Preserve original order.
+
+9. Return ONLY valid JSON.
+
+==================================================
+OUTPUT FORMAT
+==================================================
+
+{{
+  "basics": {{
+    "full_name": "",
+    "headline": "",
+    "emails": [],
+    "phones": [],
+    "location": "",
+    "links": [
+      {{
+        "label": "",
+        "url": ""
+      }}
+    ]
+  }},
+
+  "sections": [
     {{
-        "summary": "Your profile summary string...",
-        "skills": ["Skill1", "Skill2"],
-        "experience": [
-            {{
-                "company": "Company Name",
-                "role": "Role Title",
-                "duration": "Dates active",
-                "bullets": ["Action statement 1", "Action statement 2"]
-            }}
-        ],
-        "education": ["Education details strings"]
+      "id": "",
+      "title": "",
+      "type": "",
+      "content": [],
+      "raw_text": ""
     }}
-    
-    Raw text:
-    {raw_text}
-    """
+  ],
+
+  "metadata": {{
+    "section_order": [],
+    "parsing_confidence": 0.0
+  }},
+
+  "raw_resume_text": ""
+}}
+
+==================================================
+RESUME
+==================================================
+
+{raw_text}
+"""
+
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": "You are a precise data extractor that outputs ONLY valid JSON matching the requested schema."},
-            {"role": "user", "content": prompt}
+            {
+                "role": "system",
+                "content": (
+                    "You are a universal resume parser. "
+                    "Return ONLY valid JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
         ],
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        temperature=0.1,
     )
-    return json.loads(response.choices[0].message.content)
 
-def extract_keywords(jd_text: str, existing_skills: list) -> list:
-    """Identifies critical target missing keywords from the JD."""
+    parsed = json.loads(
+        response.choices[0].message.content
+    )
+
+    parsed.setdefault("basics", {})
+    parsed.setdefault("sections", [])
+    parsed.setdefault("metadata", {})
+    parsed.setdefault("raw_resume_text", raw_text)
+
+    for section in parsed["sections"]:
+
+        if not section.get("id"):
+            section["id"] = str(uuid4())
+
+    return parsed
+
+def extract_keywords(jd_text: str, existing_resume_data: dict) -> list:
+
     prompt = f"""
-    Analyze the following Job Description. Identify up to 10 key technical skills or terms required.
-    Ignore terms the candidate already has in this list: {existing_skills}.
-    Return a JSON object containing an array of strings. Format: {{"keywords": ["keyword1", "keyword2"]}}
-    
-    Job Description:
-    {jd_text}
-    """
+You are an ATS keyword extraction engine.
+
+Extract the most important:
+- skills
+- tools
+- technologies
+- qualifications
+- certifications
+- competencies
+- domain keywords
+
+from this job description.
+
+RULES:
+1. Return maximum 15 keywords
+2. Avoid duplicates
+3. Keep keywords compact
+4. No explanations
+5. Return ONLY JSON
+
+JOB DESCRIPTION:
+{jd_text}
+
+RESUME DATA:
+{json.dumps(existing_resume_data)}
+"""
+
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": "You are a technical recruiter. Return your analysis matching the exact JSON format requested."},
-            {"role": "user", "content": prompt}
+            {
+                "role": "system",
+                "content": (
+                    "You extract ATS keywords. "
+                    "Return ONLY valid JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
         ],
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        temperature=0.1,
     )
-    return json.loads(response.choices[0].message.content).get("keywords", [])
 
-def generate_optimization_proposals(resume_data: dict, selected_keywords: list) -> list:
-    """Generates modifications for existing text to include missing keywords without altering meaning."""
+    parsed = json.loads(
+        response.choices[0].message.content
+    )
+
+    return parsed.get("keywords", [])
+
+def generate_optimization_proposals(
+    resume_data: dict,
+    selected_keywords: list
+) -> list:
+
     prompt = f"""
-    You are an expert resume writer. Your job is to inject these keywords: {selected_keywords} into the resume data provided below.
-    
-    CRITICAL RULES:
-    1. Do NOT fabricate experience, change meaning, or add completely new blocks of text.
-    2. Only modify existing lines (summary or experience bullet points) to naturally include the keyword.
-    3. Adding a keyword once across the entire document is sufficient.
-    4. Return a JSON object with a list of proposed adjustments matching this exact schema:
+You are an elite ATS resume optimization engine.
+
+Your task:
+Inject these keywords naturally into the resume.
+
+KEYWORDS:
+{selected_keywords}
+
+RULES:
+1. NEVER fabricate fake experience
+2. NEVER invent projects
+3. NEVER change meaning
+4. ONLY improve existing content
+5. Preserve professionalism
+6. Preserve truthfulness
+7. Make wording ATS optimized
+8. Return ONLY JSON
+
+RETURN FORMAT:
+
+{{
+  "proposals": [
     {{
-        "proposals": [
-            {{
-                "id": 1,
-                "section": "experience", 
-                "item_index": 0, 
-                "bullet_index": 1,
-                "original_line": "Original bullet point text",
-                "proposed_line": "Modified bullet point text containing the keyword naturally",
-                "keyword_added": "The Keyword"
-            }}
-        ]
+      "id": 1,
+      "section_id": "section-id",
+      "content_index": 0,
+      "original_text": "",
+      "proposed_text": "",
+      "keyword_added": ""
     }}
-    
-    Resume Data:
-    {json.dumps(resume_data)}
-    """
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[
-            {"role": "system", "content": "You optimize resume strings. Return ONLY the JSON container with the proposals data list."},
-            {"role": "user", "content": prompt}
-        ],
-        response_format={"type": "json_object"}
-    )
-    return json.loads(response.choices[0].message.content).get("proposals", [])
+  ]
+}}
 
-def create_cover_letter(resume_data: dict, jd_text: str) -> str:
-    """Generates a professional cover letter matching the candidate's core profile context."""
-    prompt = f"""
-    Write a concise, professional cover letter based on this resume and target job description.
-    Resume: {json.dumps(resume_data)}
-    Job Description: {jd_text}
-    Keep it standard, clean, and compelling. Output the document text directly. Do not wrap it in JSON.
-    """
+RESUME:
+{json.dumps(resume_data)}
+"""
+
     response = client.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
-            {"role": "system", "content": "You are an expert career consultant writing a professional cover letter copy."},
-            {"role": "user", "content": prompt}
-        ]
-        # Removed json_object constraint since we want raw paragraph formatting here
+            {
+                "role": "system",
+                "content": (
+                    "You optimize resumes for ATS systems. "
+                    "Return ONLY JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.2,
     )
+
+    parsed = json.loads(
+        response.choices[0].message.content
+    )
+
+    return parsed.get("proposals", [])
+
+def create_cover_letter(
+    resume_data: dict,
+    jd_text: str
+) -> str:
+
+    prompt = f"""
+Write a professional cover letter.
+
+RULES:
+1. Keep it concise
+2. Keep it professional
+3. Match candidate profile with job description
+4. No fake claims
+5. No markdown
+
+RESUME:
+{json.dumps(resume_data)}
+
+JOB DESCRIPTION:
+{jd_text}
+"""
+
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert cover letter writer."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0.3,
+    )
+
     return response.choices[0].message.content

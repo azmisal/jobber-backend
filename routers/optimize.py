@@ -34,7 +34,132 @@ def fetch_proposals(payload: KeywordSelection, current_user: TokenData = Depends
     return {"proposals": proposals}
 
 @router.post("/apply")
-def apply_optimization_and_finalize(payload: OptimizationApprovalPayload, current_user: TokenData = Depends(get_current_user), db=Depends(get_db)):
+def apply_optimization_and_finalize(
+    payload: OptimizationApprovalPayload,
+    current_user: TokenData = Depends(get_current_user),
+    db=Depends(get_db)
+):
+
+    profile = db.profiles.find_one({
+        "user_id": current_user.user_id
+    })
+
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail="Resume profile not found."
+        )
+
+    optimized_resume = profile["parsed_resume_data"].copy()
+
+    approved_proposals = [
+        p for p in payload.proposals
+        if p.id in payload.approved_ids
+    ]
+
+    # =====================================================
+    # APPLY OPTIMIZATIONS
+    # =====================================================
+
+    for proposal in approved_proposals:
+
+        section_id = proposal.section_id
+        content_index = proposal.content_index
+        proposed_text = proposal.proposed_text
+
+        target_section = None
+
+        for section in optimized_resume.get("sections", []):
+
+            if section.get("id") == section_id:
+                target_section = section
+                break
+
+        if not target_section:
+            continue
+
+        content = target_section.get("content", [])
+
+        if content_index >= len(content):
+            continue
+
+        existing_item = content[content_index]
+
+        # -----------------------------------------
+        # STRING CONTENT
+        # -----------------------------------------
+
+        if isinstance(existing_item, str):
+
+            content[content_index] = proposed_text
+
+        # -----------------------------------------
+        # OBJECT CONTENT
+        # -----------------------------------------
+
+        elif isinstance(existing_item, dict):
+
+            updated = False
+
+            # Update bullets first if available
+            bullets = existing_item.get("bullets")
+
+            if isinstance(bullets, list) and bullets:
+
+                for idx, bullet in enumerate(bullets):
+
+                    if proposal.original_text.strip() == str(bullet).strip():
+
+                        bullets[idx] = proposed_text
+                        updated = True
+                        break
+
+            # Fallback:
+            # update first matching string field
+            if not updated:
+
+                for key, value in existing_item.items():
+
+                    if (
+                        isinstance(value, str)
+                        and value.strip() == proposal.original_text.strip()
+                    ):
+                        existing_item[key] = proposed_text
+                        updated = True
+                        break
+
+    # =====================================================
+    # GENERATE PDF
+    # =====================================================
+
+    pdf_output_bytes = generate_pdf_bytes(
+        optimized_resume
+    )
+
+    unique_filename = (
+        f"{payload.output_file_name}_{current_user.user_id}"
+    )
+
+    cloudinary_download_url = upload_pdf(
+        pdf_output_bytes,
+        unique_filename
+    )
+
+    # =====================================================
+    # COVER LETTER
+    # =====================================================
+
+    cover_letter = create_cover_letter(
+        optimized_resume,
+        profile.get("current_jd", "")
+    )
+
+    return {
+        "message": "Tailored resume generated successfully.",
+        "file_name": unique_filename,
+        "download_url": cloudinary_download_url,
+        "cover_letter": cover_letter
+    }
     profile = db.profiles.find_one({"user_id": current_user.user_id})
     optimized_resume = profile["parsed_resume_data"].copy()
     
