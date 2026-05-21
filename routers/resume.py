@@ -5,7 +5,8 @@ from utils.pdf_parser import extract_text_from_pdf
 from utils.auth_helpers import get_current_user
 from models.auth import TokenData
 from services.cloudinary_service import upload_pdf
-from services.llm_service import parse_resume_to_json
+from services.llm_service import (parse_resume_to_json)
+
 
 router = APIRouter(prefix="/api/resume", tags=["Resume Management"])
 

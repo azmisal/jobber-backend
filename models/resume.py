@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 class ResumeLink(BaseModel):
@@ -44,11 +44,12 @@ class KeywordSelection(BaseModel):
     selected_keywords: List[str]
     rejected_keywords: List[str] = []
 
-
 class OptimizationProposal(BaseModel):
     id: int
     section_id: str
-    content_index: int
+    item_index: int
+    field: str
+    field_index: Optional[int] = None
     original_text: str
     proposed_text: str
     keyword_added: str

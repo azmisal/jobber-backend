@@ -209,34 +209,75 @@ def generate_optimization_proposals(
     resume_data: dict,
     selected_keywords: list
 ) -> list:
+    """
+    Generates ATS-friendly keyword injection proposals
+    while improving grammar and professionalism.
+    """
 
     prompt = f"""
 You are an elite ATS resume optimization engine.
 
 Your task:
-Inject these keywords naturally into the resume.
+Inject these keywords naturally into the resume:
 
-KEYWORDS:
+TARGET KEYWORDS:
 {selected_keywords}
 
-RULES:
-1. NEVER fabricate fake experience
-2. NEVER invent projects
-3. NEVER change meaning
-4. ONLY improve existing content
-5. Preserve professionalism
-6. Preserve truthfulness
-7. Make wording ATS optimized
-8. Return ONLY JSON
+==================================================
+CRITICAL RULES
+==================================================
 
-RETURN FORMAT:
+1. Do NOT fabricate experience.
+
+2. Do NOT change meaning.
+
+3. Do NOT add fake tools, skills,
+companies, projects, certifications,
+or achievements.
+
+4. Only modify EXISTING text.
+
+5. Inject keywords naturally.
+
+6. Improve:
+- grammar
+- spelling
+- ATS readability
+- sentence clarity
+- professionalism
+
+7. Keep ALL:
+- metrics
+- numbers
+- technologies
+- business impact
+- responsibilities
+
+8. Avoid keyword stuffing.
+
+9. Keep sentences concise and ATS-friendly.
+
+10. Final text must sound natural and human-written.
+
+11. One keyword insertion across the resume is usually enough.
+
+12. If a sentence should NOT be modified,
+DO NOT create a proposal for it.
+
+==================================================
+RETURN FORMAT
+==================================================
+
+Return ONLY valid JSON.
 
 {{
   "proposals": [
     {{
       "id": 1,
-      "section_id": "section-id",
-      "content_index": 0,
+      "section_id": "experience",
+      "item_index": 0,
+      "field": "bullets",
+      "field_index": 0,
       "original_text": "",
       "proposed_text": "",
       "keyword_added": ""
@@ -244,7 +285,10 @@ RETURN FORMAT:
   ]
 }}
 
-RESUME:
+==================================================
+RESUME JSON
+==================================================
+
 {json.dumps(resume_data)}
 """
 
@@ -254,8 +298,8 @@ RESUME:
             {
                 "role": "system",
                 "content": (
-                    "You optimize resumes for ATS systems. "
-                    "Return ONLY JSON."
+                    "You optimize resumes for ATS systems "
+                    "without changing meaning."
                 ),
             },
             {
@@ -267,11 +311,12 @@ RESUME:
         temperature=0.2,
     )
 
-    parsed = json.loads(
+    data = json.loads(
         response.choices[0].message.content
     )
 
-    return parsed.get("proposals", [])
+    return data.get("proposals", [])
+
 
 def create_cover_letter(
     resume_data: dict,

@@ -7,15 +7,18 @@ import pdfplumber
 from fastapi import HTTPException
 
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import (
+    getSampleStyleSheet,
+    ParagraphStyle,
+)
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
     Spacer,
 )
-from reportlab.lib.styles import (
-    getSampleStyleSheet,
-    ParagraphStyle,
-)
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib import colors
+
 
 # =========================================================
 # PDF TEXT EXTRACTION
@@ -41,104 +44,204 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
             detail="Unable to read PDF."
         )
 
-    return raw_text
+    return raw_text.strip()
 
 
 # =========================================================
-# SAFE HELPERS
+# SAFE TEXT
 # =========================================================
 
 def safe_text(value) -> str:
 
-    """
-    Safely converts ANY value into renderable string.
-    """
-
     if value is None:
         return ""
 
-    # -----------------------------------
-    # STRING
-    # -----------------------------------
-
     if isinstance(value, str):
-
         return html.escape(value.strip())
 
-    # -----------------------------------
-    # NUMBER / BOOL
-    # -----------------------------------
-
     if isinstance(value, (int, float, bool)):
-
         return html.escape(str(value))
-
-    # -----------------------------------
-    # LIST
-    # -----------------------------------
 
     if isinstance(value, list):
 
-        parts = []
+        cleaned = []
 
         for item in value:
 
-            if isinstance(item, str):
+            rendered = safe_text(item)
 
-                cleaned = item.strip()
+            if rendered:
+                cleaned.append(rendered)
 
-                if cleaned:
-                    parts.append(cleaned)
-
-            elif isinstance(item, dict):
-
-                inner = []
-
-                for k, v in item.items():
-
-                    if not v:
-                        continue
-
-                    rendered = safe_text(v)
-
-                    if rendered:
-                        inner.append(rendered)
-
-                if inner:
-                    parts.append(" | ".join(inner))
-
-            else:
-
-                parts.append(str(item))
-
-        return html.escape(", ".join(parts))
-
-    # -----------------------------------
-    # DICT
-    # -----------------------------------
+        return ", ".join(cleaned)
 
     if isinstance(value, dict):
 
-        parts = []
+        cleaned = []
 
-        for k, v in value.items():
-
-            if not v:
-                continue
+        for _, v in value.items():
 
             rendered = safe_text(v)
 
             if rendered:
-                parts.append(rendered)
+                cleaned.append(rendered)
 
-        return html.escape(" | ".join(parts))
-
-    # -----------------------------------
-    # FALLBACK
-    # -----------------------------------
+        return " | ".join(cleaned)
 
     return html.escape(str(value))
 
+
+# =========================================================
+# CONTENT DENSITY
+# =========================================================
+
+MAX_SINGLE_PAGE_SCORE = 420
+
+
+def calculate_content_density(resume_data: dict):
+
+    total_chars = len(str(resume_data))
+
+    sections = resume_data.get(
+        "sections",
+        [],
+    )
+
+    total_items = 0
+
+    total_bullets = 0
+
+    for section in sections:
+
+        content = section.get(
+            "content",
+            [],
+        )
+
+        total_items += len(content)
+
+        for item in content:
+
+            if isinstance(item, dict):
+
+                bullets = item.get(
+                    "bullets",
+                    [],
+                )
+
+                if isinstance(bullets, list):
+                    total_bullets += len(
+                        bullets
+                    )
+
+    score = (
+        total_chars / 120 +
+        total_items * 4 +
+        total_bullets * 5
+    )
+
+    return score
+
+
+# =========================================================
+# DYNAMIC STYLE ENGINE
+# =========================================================
+
+def get_dynamic_styles(score: float):
+
+    styles = getSampleStyleSheet()
+
+    # =====================================================
+    # LIGHT CONTENT
+    # =====================================================
+
+    if score < 180:
+
+        title_size = 20
+        body_size = 10
+        line_height = 13
+
+        section_spacing = 12
+        item_spacing = 8
+
+    # =====================================================
+    # MEDIUM CONTENT
+    # =====================================================
+
+    elif score < MAX_SINGLE_PAGE_SCORE:
+
+        title_size = 18
+        body_size = 9
+        line_height = 11
+
+        section_spacing = 8
+        item_spacing = 5
+
+    # =====================================================
+    # EXTREME COMPRESSION
+    # =====================================================
+
+    else:
+
+        title_size = 14
+        body_size = 7.4
+        line_height = 8.2
+
+        section_spacing = 3
+        item_spacing = 1
+
+    return {
+        "title": ParagraphStyle(
+            "Title",
+            parent=styles["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=title_size,
+            leading=title_size + 2,
+            alignment=TA_CENTER,
+            textColor=colors.black,
+            spaceAfter=4,
+        ),
+
+        "heading": ParagraphStyle(
+            "Heading",
+            parent=styles["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=body_size + 1,
+            leading=line_height,
+            textColor=colors.black,
+            spaceBefore=section_spacing,
+            spaceAfter=3,
+        ),
+
+        "body": ParagraphStyle(
+            "Body",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=body_size,
+            leading=line_height,
+            textColor=colors.black,
+            spaceAfter=1,
+        ),
+
+        "bullet": ParagraphStyle(
+            "Bullet",
+            parent=styles["Normal"],
+            fontName="Helvetica",
+            fontSize=body_size,
+            leading=line_height,
+            leftIndent=10,
+            bulletIndent=0,
+            spaceAfter=0,
+        ),
+
+        "small_gap": item_spacing,
+        "section_gap": section_spacing,
+    }
+
+
+# =========================================================
+# HELPERS
+# =========================================================
 
 def add_paragraph(story, text, style):
 
@@ -152,298 +255,409 @@ def add_paragraph(story, text, style):
 
 
 # =========================================================
-# UNIVERSAL PDF GENERATOR
+# PDF GENERATOR
 # =========================================================
 
 def generate_pdf_bytes(resume_data: dict) -> bytes:
 
     buffer = io.BytesIO()
 
+    density_score = calculate_content_density(
+        resume_data
+    )
+
+    dynamic = get_dynamic_styles(
+        density_score
+    )
+
+    title_style = dynamic["title"]
+    heading_style = dynamic["heading"]
+    body_style = dynamic["body"]
+    bullet_style = dynamic["bullet"]
+
+    small_gap = dynamic["small_gap"]
+    section_gap = dynamic["section_gap"]
+
+    # =====================================================
+    # DYNAMIC MARGINS
+    # =====================================================
+
+    if density_score > 300:
+
+        margin = 18
+
+    else:
+
+        margin = 28
+
     doc = SimpleDocTemplate(
         buffer,
         pagesize=letter,
-        rightMargin=40,
-        leftMargin=40,
-        topMargin=40,
-        bottomMargin=40,
-    )
-
-    styles = getSampleStyleSheet()
-
-    title_style = ParagraphStyle(
-        "ResumeTitle",
-        parent=styles["Heading1"],
-        fontSize=22,
-        leading=28,
-        spaceAfter=14,
-    )
-
-    heading_style = ParagraphStyle(
-        "ResumeHeading",
-        parent=styles["Heading2"],
-        fontSize=14,
-        leading=18,
-        spaceBefore=12,
-        spaceAfter=8,
-    )
-
-    body_style = ParagraphStyle(
-        "ResumeBody",
-        parent=styles["Normal"],
-        fontSize=10,
-        leading=15,
-        spaceAfter=6,
-    )
-
-    bullet_style = ParagraphStyle(
-        "ResumeBullet",
-        parent=styles["Normal"],
-        fontSize=10,
-        leading=14,
-        leftIndent=15,
-        spaceAfter=4,
+        rightMargin=margin,
+        leftMargin=margin,
+        topMargin=18,
+        bottomMargin=18,
     )
 
     story = []
 
+    basics = resume_data.get(
+        "basics",
+        {},
+    )
+
     # =====================================================
-    # BASICS
+    # NAME
     # =====================================================
 
-    basics = resume_data.get("basics", {})
-
-    full_name = basics.get("full_name", "")
+    full_name = basics.get(
+        "full_name",
+        "",
+    )
 
     if full_name:
 
         story.append(
             Paragraph(
                 safe_text(full_name),
-                title_style
+                title_style,
             )
         )
 
-    headline = basics.get("headline")
+    # =====================================================
+    # HEADLINE
+    # =====================================================
+
+    headline = basics.get(
+        "headline",
+        "",
+    )
 
     if headline:
 
         add_paragraph(
             story,
             headline,
-            body_style
+            body_style,
         )
+
+    # =====================================================
+    # CONTACT
+    # =====================================================
 
     contact_parts = []
 
-    emails = basics.get("emails", [])
-    phones = basics.get("phones", [])
-    location = basics.get("location", "")
-    links = basics.get("links", [])
+    emails = basics.get(
+        "emails",
+        [],
+    )
+
+    phones = basics.get(
+        "phones",
+        [],
+    )
+
+    location = basics.get(
+        "location",
+        "",
+    )
+
+    links = basics.get(
+        "links",
+        [],
+    )
 
     if emails:
-        contact_parts.append(", ".join(emails))
+        contact_parts.extend(emails)
 
     if phones:
-        contact_parts.append(", ".join(phones))
+        contact_parts.extend(phones)
 
     if location:
         contact_parts.append(location)
 
-    if links:
+    # =====================================================
+    # FIXED LINK PICKUP
+    # =====================================================
 
-        link_strings = []
+    if isinstance(links, list):
 
         for link in links:
 
             if isinstance(link, dict):
 
-                label = link.get("label", "")
-                url = link.get("url", "")
+                label = link.get(
+                    "label",
+                    "",
+                )
+
+                url = link.get(
+                    "url",
+                    "",
+                )
 
                 if label and url:
-                    link_strings.append(f"{label}: {url}")
+
+                    contact_parts.append(
+                        f"{label}: {url}"
+                    )
 
                 elif url:
-                    link_strings.append(url)
 
-        if link_strings:
-            contact_parts.append(" | ".join(link_strings))
+                    contact_parts.append(url)
 
     if contact_parts:
 
-        add_paragraph(
-            story,
-            " • ".join(contact_parts),
-            body_style
+        story.append(
+            Paragraph(
+                " • ".join(contact_parts),
+                body_style,
+            )
         )
 
-    story.append(Spacer(1, 12))
+    story.append(
+        Spacer(1, section_gap)
+    )
 
     # =====================================================
-    # DYNAMIC SECTIONS
+    # SECTIONS
     # =====================================================
 
-    sections = resume_data.get("sections", [])
+    sections = resume_data.get(
+        "sections",
+        [],
+    )
 
     for section in sections:
 
-        title = section.get("title", "").strip()
+        title = safe_text(
+            section.get("title")
+        )
 
         if not title:
             continue
 
         story.append(
             Paragraph(
-                safe_text(title),
-                heading_style
+                title.upper(),
+                heading_style,
             )
         )
 
-        content = section.get("content", [])
+        content = section.get(
+            "content",
+            [],
+        )
 
         if not isinstance(content, list):
             continue
 
+        # =================================================
+        # PURE TAG SECTIONS
+        # =================================================
+
+        if all(
+            isinstance(x, str)
+            for x in content
+        ):
+
+            skills = []
+
+            for skill in content:
+
+                cleaned = safe_text(skill)
+
+                if cleaned:
+                    skills.append(cleaned)
+
+            if skills:
+
+                story.append(
+                    Paragraph(
+                        " • ".join(skills),
+                        body_style,
+                    )
+                )
+
+            story.append(
+                Spacer(1, small_gap)
+            )
+
+            continue
+
+        # =================================================
+        # OBJECT CONTENT
+        # =================================================
+
         for item in content:
 
-            # ============================================
-            # STRING ITEM
-            # ============================================
+            if not isinstance(item, dict):
+                continue
 
-            if isinstance(item, str):
+            # =============================================
+            # SUMMARY LINE
+            # =============================================
 
-                cleaned = item.strip()
+            summary_parts = []
+
+            priority_keys = [
+                "title",
+                "name",
+                "role",
+                "company",
+                "institution",
+                "organization",
+                "subtitle",
+            ]
+
+            for key in priority_keys:
+
+                value = item.get(key)
+
+                if value:
+
+                    summary_parts.append(
+                        safe_text(value)
+                    )
+
+            summary = " | ".join(
+                summary_parts
+            )
+
+            if summary:
+
+                story.append(
+                    Paragraph(
+                        f"<b>{summary}</b>",
+                        body_style,
+                    )
+                )
+
+            # =============================================
+            # META LINE
+            # =============================================
+
+            meta_parts = []
+
+            duration = item.get(
+                "duration"
+            )
+
+            location = item.get(
+                "location"
+            )
+
+            if duration:
+                meta_parts.append(
+                    safe_text(duration)
+                )
+
+            if location:
+                meta_parts.append(
+                    safe_text(location)
+                )
+
+            if meta_parts:
+
+                story.append(
+                    Paragraph(
+                        " • ".join(meta_parts),
+                        body_style,
+                    )
+                )
+
+            # =============================================
+            # BULLETS
+            # =============================================
+
+            bullets = item.get(
+                "bullets",
+                [],
+            )
+
+            if isinstance(bullets, list):
+
+                for bullet in bullets:
+
+                    cleaned = safe_text(
+                        bullet
+                    )
+
+                    if cleaned:
+
+                        story.append(
+                            Paragraph(
+                                f"• {cleaned}",
+                                bullet_style,
+                            )
+                        )
+
+            # =============================================
+            # TECHNOLOGIES
+            # =============================================
+
+            technologies = item.get(
+                "technologies",
+                [],
+            )
+
+            if technologies:
+
+                rendered = safe_text(
+                    technologies
+                )
+
+                if rendered:
+
+                    story.append(
+                        Paragraph(
+                            f"<b>Technologies:</b> {rendered}",
+                            body_style,
+                        )
+                    )
+
+            # =============================================
+            # EXTRA FIELDS
+            # =============================================
+
+            ignored = {
+                "title",
+                "name",
+                "role",
+                "company",
+                "institution",
+                "organization",
+                "subtitle",
+                "duration",
+                "location",
+                "bullets",
+                "technologies",
+            }
+
+            for key, value in item.items():
+
+                if key in ignored:
+                    continue
+
+                cleaned = safe_text(
+                    value
+                )
 
                 if cleaned:
 
                     story.append(
                         Paragraph(
-                            f"• {safe_text(cleaned)}",
-                            bullet_style
+                            cleaned,
+                            body_style,
                         )
                     )
 
-                continue
-
-            # ============================================
-            # OBJECT ITEM
-            # ============================================
-
-            if isinstance(item, dict):
-
-                fields = list(item.items())
-
-                if not fields:
-                    continue
-
-                first_line_rendered = False
-
-                # ----------------------------------------
-                # Render key summary line
-                # ----------------------------------------
-
-                summary_parts = []
-
-                preferred_keys = [
-                    "title",
-                    "name",
-                    "role",
-                    "company",
-                    "institution",
-                    "organization",
-                    "subtitle",
-                    "duration",
-                    "date",
-                ]
-
-                used_keys = set()
-
-                for key in preferred_keys:
-
-                    value = item.get(key)
-
-                    if value:
-
-                        summary_parts.append(
-                            safe_text(value)
-                        )
-
-                        used_keys.add(key)
-
-                if summary_parts:
-
-                    story.append(
-                        Paragraph(
-                            "<b>" + " | ".join(summary_parts) + "</b>",
-                            body_style
-                        )
-                    )
-
-                    first_line_rendered = True
-
-                # ----------------------------------------
-                # Render remaining fields
-                # ----------------------------------------
-
-                for key, value in item.items():
-
-                    if key in used_keys:
-                        continue
-
-                    if not value:
-                        continue
-
-                    # bullets array
-                    if isinstance(value, list):
-
-                        if key.lower() == "bullets":
-
-                            for bullet in value:
-
-                                bullet_text = safe_text(bullet)
-
-                                if bullet_text.strip():
-
-                                    story.append(
-                                        Paragraph(
-                                            f"• {bullet_text}",
-                                            bullet_style
-                                        )
-                                    )
-
-                        else:
-
-                            rendered = safe_text(value)
-
-                            if rendered.strip():
-
-                                story.append(
-                                    Paragraph(
-                                        rendered,
-                                        body_style
-                                    )
-                                )
-
-                    # string fields
-                    else:
-
-                        rendered = safe_text(value)
-
-                        if rendered.strip():
-
-                            story.append(
-                                Paragraph(
-                                    rendered,
-                                    body_style
-                                )
-                            )
-
-                story.append(
-                    Spacer(1, 6)
-                )
+            story.append(
+                Spacer(1, small_gap)
+            )
 
         story.append(
-            Spacer(1, 10)
+            Spacer(1, section_gap)
         )
 
     # =====================================================
@@ -452,6 +666,8 @@ def generate_pdf_bytes(resume_data: dict) -> bytes:
 
     doc.build(story)
 
-    buffer.seek(0)
+    pdf_bytes = buffer.getvalue()
 
-    return buffer.getvalue()
+    buffer.close()
+
+    return pdf_bytes
