@@ -67,6 +67,22 @@ RULES
 - awards
 - publications
 
+3a. If the resume text contains markdown links like [LinkedIn](https://...),
+preserve the linked display words and add the same label/url pair under
+basics.links. Do not replace a linked word with only its URL.
+If a trailing "Embedded PDF links" helper block is present, use it only for
+link/contact extraction; do not create it as a resume section.
+
+3b. Extract contact details dynamically when present:
+- emails
+- phone numbers
+- LinkedIn
+- GitHub
+- portfolio/personal websites
+- other profile or project links
+
+Do not add empty placeholder links for contact types that are not present.
+
 4. IMPORTANT:
 Skills should remain compact.
 

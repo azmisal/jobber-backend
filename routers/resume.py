@@ -1,7 +1,10 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
 from database.connection import get_db
 from models.resume import ResumeDataSchema
-from utils.pdf_parser import extract_text_from_pdf
+from utils.pdf_parser import (
+    enrich_resume_data_with_pdf_context,
+    extract_resume_pdf_context,
+)
 from utils.auth_helpers import get_current_user
 from models.auth import TokenData
 from services.cloudinary_service import upload_pdf
@@ -26,9 +29,16 @@ async def upload_and_parse(
         f"master_{current_user.user_id}"
     )
 
-    raw_text = extract_text_from_pdf(file_bytes)
+    pdf_context = extract_resume_pdf_context(file_bytes)
 
-    parsed_json = parse_resume_to_json(raw_text, model)
+    parsed_json = parse_resume_to_json(
+        pdf_context["text"],
+        model,
+    )
+    parsed_json = enrich_resume_data_with_pdf_context(
+        parsed_json,
+        pdf_context,
+    )
 
     profile_record = {
         "user_id": current_user.user_id,

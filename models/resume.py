@@ -27,6 +27,8 @@ class ResumeSection(BaseModel):
 class ResumeMetadata(BaseModel):
     section_order: List[str] = []
     parsing_confidence: float = 0.0
+    embedded_links: List[ResumeLink] = []
+    plain_resume_text: str = ""
 
 
 class ResumeDataSchema(BaseModel):

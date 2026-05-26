@@ -258,11 +258,13 @@ def apply_optimization_and_finalize(
             optimized_resume
         )
     )
-
+    print(type(pdf_output_bytes))
+    print(pdf_output_bytes)
+    print(len(pdf_output_bytes) if pdf_output_bytes else "EMPTY")
     unique_filename = (
-        f"{payload.output_file_name}_"
-        f"{current_user.user_id}"
-    )
+            f"{payload.output_file_name}_"
+            f"{current_user.user_id}"
+        )
 
     cloudinary_download_url = (
         upload_pdf(
