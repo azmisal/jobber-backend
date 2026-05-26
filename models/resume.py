@@ -74,3 +74,14 @@ class OptimizationApprovalPayload(BaseModel):
     proposals: List[OptimizationProposal]
     output_file_name: str
     model: Optional[str] = None
+
+
+class OptimizationApplyHistoryPayload(OptimizationApprovalPayload):
+    """Extend apply payload with history persistence fields."""
+
+    model_config = ConfigDict(extra="allow")
+
+    company_name: Optional[str] = None
+    original_job_description: Optional[str] = None
+    selected_keywords: List[str] = []
+

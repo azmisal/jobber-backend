@@ -12,12 +12,15 @@ from utils.resume_quality import (
 from utils.auth_helpers import get_current_user
 from models.auth import TokenData
 from services.cloudinary_service import upload_pdf
-from services.llm_service import (parse_resume_to_json)
+from services.llm_service import parse_resume_to_json
+
+from utils.profile_upsert import upsert_profile
 
 
 router = APIRouter(prefix="/api/resume", tags=["Resume Management"])
 
 from fastapi import Form
+
 
 @router.post("/upload")
 async def upload_and_parse(
@@ -46,38 +49,65 @@ async def upload_and_parse(
     )
     parsed_json = cleanup_resume_data(parsed_json)
 
-    profile_record = {
-        "user_id": current_user.user_id,
-        "cloudinary_url": cloudinary_url,
-        "parsed_resume_data": parsed_json
-    }
+    # Persist required profile shape (single object per user)
+    profiles_col = db.profiles
+    users_col = db.users
 
-    db.profiles.update_one(
-        {"user_id": current_user.user_id},
-        {"$set": profile_record},
-        upsert=True
+    upserted = upsert_profile(
+        profiles_col,
+        users_col,
+        user_id=current_user.user_id,
+        username=current_user.username,
+        resumeUrl=cloudinary_url,
+        profileData=parsed_json,
     )
 
     return {
         "message": "Resume uploaded and learned.",
-        "profile": parsed_json
+        "profile": upserted.get("profileData", parsed_json),
     }
+
+
 @router.get("/profile")
-def get_profile(current_user: TokenData = Depends(get_current_user), db=Depends(get_db)):
+def get_profile(
+    current_user: TokenData = Depends(get_current_user),
+    db=Depends(get_db),
+):
     profile = db.profiles.find_one({"user_id": current_user.user_id})
     if not profile:
+        # Compatibility with current frontend
         return {"has_profile": False}
-    return {"has_profile": True, "data": profile["parsed_resume_data"]}
+
+    return {
+        "has_profile": True,
+        "data": profile.get("profileData") or profile.get("parsed_resume_data"),
+        "resumeUrl": profile.get("resumeUrl") or profile.get("cloudinary_url"),
+    }
+
 
 @router.put("/rectify")
-def rectify_profile(updated_data: ResumeDataSchema, current_user: TokenData = Depends(get_current_user), db=Depends(get_db)):
-    """One-time rectification to update and verify parsed resume data in the database."""
-    cleaned_data = canonicalize_resume_data(
-        updated_data.model_dump()
+def rectify_profile(
+    updated_data: ResumeDataSchema,
+    current_user: TokenData = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Update profile parsed resume data (upsert, no duplicates)."""
+
+    # Canonicalize but do NOT drop unknown/dynamic fields
+    cleaned_data = canonicalize_resume_data(updated_data.model_dump())
+
+    # Preserve existing resumeUrl if available
+    existing = db.profiles.find_one({"user_id": current_user.user_id}) or {}
+    resume_url = existing.get("resumeUrl") or existing.get("cloudinary_url") or ""
+
+    upsert_profile(
+        db.profiles,
+        db.users,
+        user_id=current_user.user_id,
+        username=current_user.username,
+        resumeUrl=resume_url,
+        profileData=cleaned_data,
     )
 
-    db.profiles.update_one(
-        {"user_id": current_user.user_id},
-        {"$set": {"parsed_resume_data": cleaned_data}}
-    )
     return {"message": "Profile updated and verified successfully"}
+
