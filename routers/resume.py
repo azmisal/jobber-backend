@@ -10,29 +10,42 @@ from services.llm_service import (parse_resume_to_json)
 
 router = APIRouter(prefix="/api/resume", tags=["Resume Management"])
 
+from fastapi import Form
+
 @router.post("/upload")
-async def upload_and_parse(file: UploadFile = File(...), current_user: TokenData = Depends(get_current_user), db=Depends(get_db)):
+async def upload_and_parse(
+    file: UploadFile = File(...),
+    model: str = Form(...),
+    current_user: TokenData = Depends(get_current_user),
+    db=Depends(get_db),
+):
     file_bytes = await file.read()
-    
-    # 1. Upload the raw original Master to Cloudinary
-    cloudinary_url = upload_pdf(file_bytes, f"master_{current_user.user_id}")
-    
-    # 2. Extract plain text data blocks
+
+    cloudinary_url = upload_pdf(
+        file_bytes,
+        f"master_{current_user.user_id}"
+    )
+
     raw_text = extract_text_from_pdf(file_bytes)
-    
-    # 3. Structure the parsing schema with LLM processing
-    parsed_json = parse_resume_to_json(raw_text)
-    
+
+    parsed_json = parse_resume_to_json(raw_text, model)
+
     profile_record = {
         "user_id": current_user.user_id,
         "cloudinary_url": cloudinary_url,
         "parsed_resume_data": parsed_json
     }
-    
-    # Save/Update profile database representation
-    db.profiles.update_one({"user_id": current_user.user_id}, {"$set": profile_record}, upsert=True)
-    return {"message": "Resume uploaded and learned.", "profile": parsed_json}
 
+    db.profiles.update_one(
+        {"user_id": current_user.user_id},
+        {"$set": profile_record},
+        upsert=True
+    )
+
+    return {
+        "message": "Resume uploaded and learned.",
+        "profile": parsed_json
+    }
 @router.get("/profile")
 def get_profile(current_user: TokenData = Depends(get_current_user), db=Depends(get_db)):
     profile = db.profiles.find_one({"user_id": current_user.user_id})

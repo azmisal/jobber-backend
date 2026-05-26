@@ -82,6 +82,7 @@ def fetch_target_keywords(
     keywords = extract_keywords(
         payload.job_description,
         existing_skills,
+        payload.model
     )
 
     db.profiles.update_one(
@@ -125,6 +126,7 @@ def fetch_proposals(
         generate_optimization_proposals(
             resume_data,
             payload.selected_keywords,
+            payload.model
         )
     )
 
@@ -276,6 +278,7 @@ def apply_optimization_and_finalize(
                 "current_jd",
                 "",
             ),
+            payload.model
         )
     )
 

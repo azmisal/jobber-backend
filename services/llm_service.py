@@ -4,13 +4,39 @@ from uuid import uuid4
 from openai import OpenAI
 from config.settings import settings
 
-client = OpenAI(
+clientgroq = OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=settings.JOBBER_GROQ_API_KEY,
+)
+clienthug = OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=settings.JOBBER_GROQ_API_KEY,
+)
+clientopen = OpenAI(
+    base_url="https://api.groq.com/openai/v1",
+    api_key=settings.JOBBER_GROQ_API_KEY,
+)
+clientollama = OpenAI(
     base_url="https://api.groq.com/openai/v1",
     api_key=settings.JOBBER_GROQ_API_KEY,
 )
 
+def get_llm_client(model_id: str) -> OpenAI:
 
-def parse_resume_to_json(raw_text: str) -> dict:
+    if model_id == "groq":
+        return clientgroq
+    elif model_id == "huggingface":
+        return clienthug
+    elif model_id == "openrouter":
+        return clientopen
+    elif model_id == "ollama":
+        return clientollama
+    else:
+        raise ValueError(f"Unsupported model ID: {model_id}")
+
+def parse_resume_to_json(raw_text: str,model:str) -> dict:
+
+    client = get_llm_client(model)
 
     prompt = f"""
 You are a universal resume reconstruction engine.
@@ -150,7 +176,8 @@ RESUME
 
     return parsed
 
-def extract_keywords(jd_text: str, existing_resume_data: dict) -> list:
+def extract_keywords(jd_text: str, existing_resume_data: dict,model:str) -> list:
+    client = get_llm_client(model)
 
     prompt = f"""
 You are an ATS keyword extraction engine.
@@ -207,12 +234,14 @@ RESUME DATA:
 
 def generate_optimization_proposals(
     resume_data: dict,
-    selected_keywords: list
+    selected_keywords: list,
+    model: str  
 ) -> list:
     """
     Generates ATS-friendly keyword injection proposals
     while improving grammar and professionalism.
     """
+    client = get_llm_client(model)
 
     prompt = f"""
 You are an elite ATS resume optimization engine.
@@ -242,6 +271,8 @@ or achievements.
 6. Improve:
 - grammar
 - spelling
+- grammatical correctness
+- spelling accuracy
 - ATS readability
 - sentence clarity
 - professionalism
@@ -263,6 +294,10 @@ or achievements.
 
 12. If a sentence should NOT be modified,
 DO NOT create a proposal for it.
+
+13. Correct grammatical mistakes, punctuation issues,
+tense inconsistencies, typo errors, and spelling mistakes
+only when necessary while preserving the original meaning.
 
 ==================================================
 RETURN FORMAT
@@ -320,8 +355,10 @@ RESUME JSON
 
 def create_cover_letter(
     resume_data: dict,
-    jd_text: str
+    jd_text: str,
+    model:str
 ) -> str:
+    client = get_llm_client(model)
 
     prompt = f"""
 Write a professional cover letter.

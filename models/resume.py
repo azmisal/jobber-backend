@@ -38,11 +38,13 @@ class ResumeDataSchema(BaseModel):
 
 class JDSubmission(BaseModel):
     job_description: str
+    model: str = "groq"
 
 
 class KeywordSelection(BaseModel):
     selected_keywords: List[str]
     rejected_keywords: List[str] = []
+    model: str = "groq"
 
 class OptimizationProposal(BaseModel):
     id: int
@@ -59,3 +61,4 @@ class OptimizationApprovalPayload(BaseModel):
     approved_ids: List[int]
     proposals: List[OptimizationProposal]
     output_file_name: str
+    model: Optional[str] = None
