@@ -1,13 +1,17 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import List, Dict, Any, Optional
 
 
 class ResumeLink(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     label: str = ""
     url: str = ""
 
 
 class ResumeBasics(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     full_name: str = ""
     headline: str = ""
     emails: List[str] = []
@@ -17,6 +21,8 @@ class ResumeBasics(BaseModel):
 
 
 class ResumeSection(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     id: str
     title: str
     type: str
@@ -25,6 +31,8 @@ class ResumeSection(BaseModel):
 
 
 class ResumeMetadata(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     section_order: List[str] = []
     parsing_confidence: float = 0.0
     embedded_links: List[ResumeLink] = []
@@ -32,6 +40,8 @@ class ResumeMetadata(BaseModel):
 
 
 class ResumeDataSchema(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     basics: ResumeBasics
     sections: List[ResumeSection]
     metadata: ResumeMetadata

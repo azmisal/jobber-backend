@@ -1,121 +1,207 @@
 import json
-from uuid import uuid4
+import re
 
 from openai import OpenAI
 from config.settings import settings
+from utils.resume_quality import canonicalize_resume_data
 
-clientgroq = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=settings.JOBBER_GROQ_API_KEY,
-)
-clienthug = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=settings.JOBBER_GROQ_API_KEY,
-)
-clientopen = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=settings.JOBBER_GROQ_API_KEY,
-)
-clientollama = OpenAI(
-    base_url="https://api.groq.com/openai/v1",
-    api_key=settings.JOBBER_GROQ_API_KEY,
-)
 
-def get_llm_client(model_id: str) -> OpenAI:
+# =====================================================
+# LLM CONFIG
+# =====================================================
 
-    if model_id == "groq":
-        return clientgroq
-    elif model_id == "huggingface":
-        return clienthug
-    elif model_id == "openrouter":
-        return clientopen
-    elif model_id == "ollama":
-        return clientollama
-    else:
-        raise ValueError(f"Unsupported model ID: {model_id}")
+LLM_CONFIGS = {
+    "groq": {
+        "client": OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=settings.JOBBER_GROQ_API_KEY,
+        ),
+        "model": "llama-3.3-70b-versatile",
+    },
 
-def parse_resume_to_json(raw_text: str,model:str) -> dict:
+    "huggingface": {
+        "client": OpenAI(
+            base_url="https://router.huggingface.co/v1",
+            api_key=settings.HUGGINGFACE_API_KEY,
+        ),
+        "model": "meta-llama/Llama-3.3-70B-Instruct",
+    },
 
-    client = get_llm_client(model)
+    "openrouter": {
+        "client": OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.OPENROUTER_API_KEY,
+        ),
+        "model": "meta-llama/llama-3.3-70b-instruct",
+    },
+    "ollama": {
+        "client": OpenAI(
+            base_url=f"{settings.OLLAMA_BASE_URL}/v1",
+            api_key="ollama",
+        ),
+        "model": "llama3.1:8b",
 
+    },
+}
+
+
+def get_llm(model_id: str):
+
+    config = LLM_CONFIGS.get(model_id)
+
+    if not config:
+        raise ValueError(
+            f"Unsupported model ID: {model_id}"
+        )
+
+    return (
+        config["client"],
+        config["model"]
+    )
+
+
+# =====================================================
+# CLEANING HELPERS
+# =====================================================
+
+def clean_resume_sentence(text: str) -> str:
+
+    text = str(text or "").strip()
+
+    text = re.sub(r"\s+", " ", text)
+
+    text = text.replace(" ,", ",")
+    text = text.replace(" .", ".")
+    text = text.replace(" ;", ";")
+    text = text.replace(" :", ":")
+
+    return text
+
+
+def normalize_optimization_proposals(
+    proposals: list
+) -> list:
+
+    normalized = []
+    seen = set()
+
+    for proposal in proposals:
+
+        if not isinstance(proposal, dict):
+            continue
+
+        if "item_index" not in proposal and "content_index" in proposal:
+            proposal["item_index"] = proposal.get("content_index")
+
+        if "item_index" not in proposal and "itemIndex" in proposal:
+            proposal["item_index"] = proposal.get("itemIndex")
+
+        if "field_index" not in proposal and "bullet_index" in proposal:
+            proposal["field_index"] = proposal.get("bullet_index")
+
+        if "field_index" not in proposal and "fieldIndex" in proposal:
+            proposal["field_index"] = proposal.get("fieldIndex")
+
+        if "section_id" not in proposal and "sectionId" in proposal:
+            proposal["section_id"] = proposal.get("sectionId")
+
+        if "original_text" not in proposal and "original_line" in proposal:
+            proposal["original_text"] = proposal.get("original_line")
+
+        if "proposed_text" not in proposal and "proposed_line" in proposal:
+            proposal["proposed_text"] = proposal.get("proposed_line")
+
+        original = clean_resume_sentence(
+            proposal.get("original_text", "")
+        )
+
+        proposed = clean_resume_sentence(
+            proposal.get("proposed_text", "")
+        )
+
+        if not original or not proposed:
+            continue
+
+        if original == proposed:
+            continue
+
+        if proposal.get("section_id") in (None, ""):
+            continue
+
+        try:
+            proposal["item_index"] = int(proposal.get("item_index"))
+        except (TypeError, ValueError):
+            continue
+
+        if proposal.get("field_index") not in (None, ""):
+            try:
+                proposal["field_index"] = int(proposal.get("field_index"))
+            except (TypeError, ValueError):
+                proposal["field_index"] = None
+
+        key = (
+            proposal.get("section_id"),
+            proposal.get("item_index"),
+            proposal.get("field"),
+            proposal.get("field_index"),
+            original.lower(),
+        )
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        proposal.setdefault(
+            "id",
+            len(normalized) + 1,
+        )
+        proposal.setdefault(
+            "field",
+            "bullets",
+        )
+        proposal.setdefault(
+            "field_index",
+            None,
+        )
+        proposal["original_text"] = original
+        proposal["proposed_text"] = proposed
+
+        proposal["keyword_added"] = (
+            clean_resume_sentence(
+                proposal.get(
+                    "keyword_added",
+                    ""
+                )
+            )
+            or "Grammar/clarity"
+        )
+
+        normalized.append(proposal)
+
+    return normalized
+
+
+# =====================================================
+# PARSE RESUME
+# =====================================================
+
+def parse_resume_to_json(
+    raw_text: str,
+    model: str,
+    embedded_links: list | None = None,
+) -> dict:
+
+    client, model_name = get_llm(model)
+
+    link_hints = embedded_links or []
     prompt = f"""
 You are a universal resume reconstruction engine.
 
-DO NOT summarize heavily.
+Parse the resume accurately.
+Do not rewrite or optimize content during parsing.
 
-==================================================
-RULES
-==================================================
-
-1. Preserve ALL sections.
-
-2. Detect section headings dynamically.
-
-3. Preserve:
-- names
-- bullets
-- descriptions
-- metrics
-- dates
-- achievements
-- skills
-- technologies
-- proficiency levels
-- links
-- certifications
-- projects
-- awards
-- publications
-
-3a. If the resume text contains markdown links like [LinkedIn](https://...),
-preserve the linked display words and add the same label/url pair under
-basics.links. Do not replace a linked word with only its URL.
-If a trailing "Embedded PDF links" helper block is present, use it only for
-link/contact extraction; do not create it as a resume section.
-
-3b. Extract contact details dynamically when present:
-- emails
-- phone numbers
-- LinkedIn
-- GitHub
-- portfolio/personal websites
-- other profile or project links
-
-Do not add empty placeholder links for contact types that are not present.
-
-4. IMPORTANT:
-Skills should remain compact.
-
-GOOD:
-[
-  "React",
-  "Node.js",
-  "English - Fluent",
-  "German - Intermediate"
-]
-
-BAD:
-[
-  {{
-    "skill": "React",
-    "description": "Frontend framework"
-  }}
-]
-
-5. If entries are simple names/tags:
-keep them as plain strings.
-
-6. ONLY create objects if structured data exists.
-
-7. Preserve unknown/custom sections.
-
-8. Preserve original order.
-
-9. Return ONLY valid JSON.
-
-==================================================
-OUTPUT FORMAT
-==================================================
+Return ONLY valid JSON using this exact dynamic schema:
 
 {{
   "basics": {{
@@ -131,34 +217,59 @@ OUTPUT FORMAT
       }}
     ]
   }},
-
   "sections": [
     {{
       "id": "",
       "title": "",
       "type": "",
-      "content": [],
+      "content": [
+        "plain string item",
+        {{
+          "title": "",
+          "subtitle": "",
+          "duration": "",
+          "location": "",
+          "bullets": [],
+          "technologies": [],
+          "links": [
+            {{
+              "label": "",
+              "url": ""
+            }}
+          ]
+        }}
+      ],
       "raw_text": ""
     }}
   ],
-
   "metadata": {{
     "section_order": [],
     "parsing_confidence": 0.0
   }},
-
   "raw_resume_text": ""
 }}
 
-==================================================
-RESUME
-==================================================
+Rules:
+- Always return "basics", "sections", "metadata", and "raw_resume_text".
+- Put every resume section inside sections[]. Do not create top-level keys
+  like experience, education, projects, skills, awards, etc.
+- Section content must be a list. Each item may be either a string or a dynamic
+  object with any keys needed for that profession/resume.
+- Preserve unknown fields inside the relevant content object instead of
+  dropping them.
+- Put project-specific links inside the matching project item, not basics.
+- Put contact/profile links in basics.links only when they belong to the
+  candidate header.
 
+RESUME:
 {raw_text}
+
+PDF LINKS:
+{json.dumps(link_hints)}
 """
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=model_name,
         messages=[
             {
                 "role": "system",
@@ -172,7 +283,9 @@ RESUME
                 "content": prompt,
             },
         ],
-        response_format={"type": "json_object"},
+        response_format={
+            "type": "json_object"
+        },
         temperature=0.1,
     )
 
@@ -180,51 +293,50 @@ RESUME
         response.choices[0].message.content
     )
 
-    parsed.setdefault("basics", {})
-    parsed.setdefault("sections", [])
-    parsed.setdefault("metadata", {})
-    parsed.setdefault("raw_resume_text", raw_text)
+    return canonicalize_resume_data(
+        parsed,
+        raw_text,
+    )
 
-    for section in parsed["sections"]:
 
-        if not section.get("id"):
-            section["id"] = str(uuid4())
+# =====================================================
+# KEYWORD EXTRACTION
+# =====================================================
 
-    return parsed
+def extract_keywords(
+    jd_text: str,
+    existing_resume_data: dict,
+    model: str,
+) -> list:
 
-def extract_keywords(jd_text: str, existing_resume_data: dict,model:str) -> list:
-    client = get_llm_client(model)
+    client, model_name = get_llm(model)
 
     prompt = f"""
 You are an ATS keyword extraction engine.
 
-Extract the most important:
+Extract:
 - skills
 - tools
 - technologies
-- qualifications
 - certifications
-- competencies
+- qualifications
 - domain keywords
 
-from this job description.
-
 RULES:
-1. Return maximum 15 keywords
-2. Avoid duplicates
-3. Keep keywords compact
-4. No explanations
-5. Return ONLY JSON
+1. Maximum 15 keywords
+2. No duplicates
+3. Compact keywords only
+4. Return ONLY JSON
 
 JOB DESCRIPTION:
 {jd_text}
 
-RESUME DATA:
+RESUME:
 {json.dumps(existing_resume_data)}
 """
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=model_name,
         messages=[
             {
                 "role": "system",
@@ -238,7 +350,9 @@ RESUME DATA:
                 "content": prompt,
             },
         ],
-        response_format={"type": "json_object"},
+        response_format={
+            "type": "json_object"
+        },
         temperature=0.1,
     )
 
@@ -248,108 +362,83 @@ RESUME DATA:
 
     return parsed.get("keywords", [])
 
+
+# =====================================================
+# RESUME OPTIMIZATION
+# =====================================================
+
 def generate_optimization_proposals(
     resume_data: dict,
     selected_keywords: list,
-    model: str  
+    model: str,
 ) -> list:
-    """
-    Generates ATS-friendly keyword injection proposals
-    while improving grammar and professionalism.
-    """
-    client = get_llm_client(model)
+
+    client, model_name = get_llm(model)
 
     prompt = f"""
 You are an elite ATS resume optimization engine.
 
-Your task:
-Inject these keywords naturally into the resume:
+Improve:
+- grammar
+- spelling
+- punctuation
+- ATS readability
+- clarity
+- professionalism
+- quantified impact
+- action verbs
+
+Inject keywords naturally.
 
 TARGET KEYWORDS:
 {selected_keywords}
 
-==================================================
-CRITICAL RULES
-==================================================
+RULES:
+1. Do NOT fabricate experience
+2. Do NOT change meaning
+3. Do NOT add fake skills/tools/projects
+4. Only modify existing text
+5. Preserve metrics and technologies
+6. Avoid repetition
+7. Avoid keyword stuffing
+8. Keep sentences concise
+9. Correct grammar whenever necessary
+10. Use stronger action verbs where truthful
+11. Improve quantified impact visibility
+12. Return ONLY valid JSON
 
-1. Do NOT fabricate experience.
-
-2. Do NOT change meaning.
-
-3. Do NOT add fake tools, skills,
-companies, projects, certifications,
-or achievements.
-
-4. Only modify EXISTING text.
-
-5. Inject keywords naturally.
-
-6. Improve:
-- grammar
-- spelling
-- grammatical correctness
-- spelling accuracy
-- ATS readability
-- sentence clarity
-- professionalism
-
-7. Keep ALL:
-- metrics
-- numbers
-- technologies
-- business impact
-- responsibilities
-
-8. Avoid keyword stuffing.
-
-9. Keep sentences concise and ATS-friendly.
-
-10. Final text must sound natural and human-written.
-
-11. One keyword insertion across the resume is usually enough.
-
-12. If a sentence should NOT be modified,
-DO NOT create a proposal for it.
-
-13. Correct grammatical mistakes, punctuation issues,
-tense inconsistencies, typo errors, and spelling mistakes
-only when necessary while preserving the original meaning.
-
-==================================================
-RETURN FORMAT
-==================================================
-
-Return ONLY valid JSON.
-
+Return this exact shape:
 {{
   "proposals": [
     {{
       "id": 1,
-      "section_id": "experience",
+      "section_id": "existing-section-id",
       "item_index": 0,
       "field": "bullets",
       "field_index": 0,
       "original_text": "",
       "proposed_text": "",
-      "keyword_added": ""
+      "keyword_added": "Grammar/clarity"
     }}
   ]
 }}
 
-==================================================
-RESUME JSON
-==================================================
+Use the exact section_id and item_index from the resume JSON. For string
+content items, use field "content" and field_index null. For object string
+fields, use that field name and field_index null. For array fields like
+bullets, use the field name and the array index.
 
+RESUME:
 {json.dumps(resume_data)}
 """
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=model_name,
         messages=[
             {
                 "role": "system",
                 "content": (
-                    "You optimize resumes for ATS systems "
+                    "You optimize resumes for ATS "
                     "without changing meaning."
                 ),
             },
@@ -358,7 +447,9 @@ RESUME JSON
                 "content": prompt,
             },
         ],
-        response_format={"type": "json_object"},
+        response_format={
+            "type": "json_object"
+        },
         temperature=0.2,
     )
 
@@ -366,15 +457,22 @@ RESUME JSON
         response.choices[0].message.content
     )
 
-    return data.get("proposals", [])
+    return normalize_optimization_proposals(
+        data.get("proposals", [])
+    )
 
+
+# =====================================================
+# COVER LETTER
+# =====================================================
 
 def create_cover_letter(
     resume_data: dict,
     jd_text: str,
-    model:str
+    model: str,
 ) -> str:
-    client = get_llm_client(model)
+
+    client, model_name = get_llm(model)
 
     prompt = f"""
 Write a professional cover letter.
@@ -382,7 +480,7 @@ Write a professional cover letter.
 RULES:
 1. Keep it concise
 2. Keep it professional
-3. Match candidate profile with job description
+3. Match resume with job description
 4. No fake claims
 5. No markdown
 
@@ -394,7 +492,7 @@ JOB DESCRIPTION:
 """
 
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model=model_name,
         messages=[
             {
                 "role": "system",

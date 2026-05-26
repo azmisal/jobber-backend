@@ -16,6 +16,10 @@ URL_RE = re.compile(
 PHONE_RE = re.compile(
     r"(?<!\w)(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{4}(?!\w)"
 )
+SECTION_HEADING_RE = re.compile(
+    r"^(summary|profile|objective|experience|work experience|employment|projects?|education|skills?|technical skills|certifications?|awards?|publications?|languages?|achievements?)$",
+    re.IGNORECASE,
+)
 
 
 def normalize_url(url: str) -> str:
@@ -80,7 +84,12 @@ def link_key(link: dict) -> tuple:
     )
 
 
-def append_unique_link(links: list, label: str, url: str) -> None:
+def append_unique_link(
+    links: list,
+    label: str,
+    url: str,
+    extra: dict | None = None,
+) -> None:
     label = clean_link_label(label)
     url = normalize_url(url)
 
@@ -94,6 +103,9 @@ def append_unique_link(links: list, label: str, url: str) -> None:
         "label": label,
         "url": url,
     }
+
+    if extra:
+        candidate.update(extra)
 
     candidate_url = normalize_url(url).lower()
 
@@ -120,6 +132,10 @@ def append_unique_link(links: list, label: str, url: str) -> None:
             == classify_link_label(url).lower()
         ):
             existing["label"] = label
+
+        if extra:
+            for key, value in extra.items():
+                existing.setdefault(key, value)
 
         return
 
@@ -152,6 +168,94 @@ def classify_link_label(url: str, fallback: str = "") -> str:
     return "Portfolio" if host else clean_link_label(url)
 
 
+def extract_contact_block(text: str) -> str:
+    lines = [
+        line.strip()
+        for line in str(text or "").splitlines()
+        if line.strip()
+    ]
+    contact_lines = []
+
+    for line in lines[:18]:
+        if contact_lines and SECTION_HEADING_RE.match(line):
+            break
+
+        contact_lines.append(line)
+
+        if len(contact_lines) >= 10:
+            break
+
+    return "\n".join(contact_lines)
+
+
+def is_link_in_text(link: dict, text: str) -> bool:
+    haystack = str(text or "").lower()
+    label = clean_link_label(link.get("label", "")).lower()
+    url = normalize_url(link.get("url", "")).lower()
+    visible_url = url.replace("https://", "").replace("http://", "")
+
+    return bool(
+        (label and label in haystack)
+        or (visible_url and visible_url in haystack)
+        or (url and url in haystack)
+    )
+
+
+def is_likely_header_link(link: dict) -> bool:
+    try:
+        page = int(link.get("page", 0))
+        top = float(link.get("top", 9999))
+    except (TypeError, ValueError):
+        return False
+
+    return page == 1 and top <= 180
+
+
+def filter_links_by_text(links: list, text: str) -> list:
+    filtered = []
+    label_counts = {}
+
+    for link in as_list(links):
+        if not isinstance(link, dict):
+            continue
+
+        label = clean_link_label(
+            link.get("label", "")
+        ).lower()
+
+        if label:
+            label_counts[label] = label_counts.get(label, 0) + 1
+
+    for link in as_list(links):
+        if not isinstance(link, dict):
+            continue
+
+        label = clean_link_label(
+            link.get("label", "")
+        ).lower()
+        url = normalize_url(
+            link.get("url", "")
+        ).lower()
+        visible_url = url.replace("https://", "").replace("http://", "")
+        haystack = str(text or "").lower()
+
+        if label_counts.get(label, 0) > 1 and not (
+            url in haystack
+            or visible_url in haystack
+            or is_likely_header_link(link)
+        ):
+            continue
+
+        if is_link_in_text(link, text):
+            append_unique_link(
+                filtered,
+                link.get("label", ""),
+                link.get("url", ""),
+            )
+
+    return filtered
+
+
 def annotate_known_link_labels(text: str, known_links: list[dict] | None) -> str:
     if not text or not known_links:
         return text
@@ -164,6 +268,8 @@ def annotate_known_link_labels(text: str, known_links: list[dict] | None) -> str
 
     labels = []
 
+    label_counts = {}
+
     for link in known_links:
         if not isinstance(link, dict):
             continue
@@ -172,6 +278,21 @@ def annotate_known_link_labels(text: str, known_links: list[dict] | None) -> str
         url = normalize_url(link.get("url", ""))
 
         if not label or not url:
+            continue
+
+        label_counts.setdefault(label.lower(), set()).add(url.lower())
+
+    for link in known_links:
+        if not isinstance(link, dict):
+            continue
+
+        label = clean_link_label(link.get("label", ""))
+        url = normalize_url(link.get("url", ""))
+
+        if not label or not url:
+            continue
+
+        if len(label_counts.get(label.lower(), set())) > 1:
             continue
 
         if EMAIL_RE.fullmatch(label) or URL_RE.fullmatch(label):
@@ -252,6 +373,7 @@ import io
 import pdfplumber
 
 from fastapi import HTTPException
+from utils.resume_quality import canonicalize_resume_data
 
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import (
@@ -356,7 +478,7 @@ def extract_annotation_label(page, annotation: dict) -> str:
         return ""
 
 
-def extract_contacts_from_text(text: str) -> dict:
+def extract_contacts_from_text(text: str, include_links: bool = True) -> dict:
     emails = []
     phones = []
     links = []
@@ -367,13 +489,14 @@ def extract_contacts_from_text(text: str) -> dict:
         if email.lower() not in {item.lower() for item in emails}:
             emails.append(email)
 
-    for match in URL_RE.finditer(text or ""):
-        url = normalize_url(match.group(0))
-        append_unique_link(
-            links,
-            classify_link_label(url),
-            url,
-        )
+    if include_links:
+        for match in URL_RE.finditer(text or ""):
+            url = normalize_url(match.group(0))
+            append_unique_link(
+                links,
+                classify_link_label(url),
+                url,
+            )
 
     for match in PHONE_RE.finditer(text or ""):
         phone = clean_link_label(match.group(0))
@@ -432,7 +555,7 @@ def extract_resume_pdf_context(file_bytes: bytes) -> dict:
 
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
 
-        for page in pdf.pages:
+        for page_index, page in enumerate(pdf.pages, start=1):
 
             text = page.extract_text()
 
@@ -463,11 +586,19 @@ def extract_resume_pdf_context(file_bytes: bytes) -> dict:
                     page,
                     annotation,
                 )
+                bbox = annotation_bbox(annotation)
+                extra = {
+                    "page": page_index,
+                }
+
+                if bbox:
+                    extra["top"] = bbox[1]
 
                 append_unique_link(
                     embedded_links,
                     label,
                     url,
+                    extra,
                 )
 
     if not raw_text.strip():
@@ -477,25 +608,31 @@ def extract_resume_pdf_context(file_bytes: bytes) -> dict:
             detail="Unable to read PDF."
         )
 
+    contact_block = extract_contact_block(raw_text)
+    contact_embedded_links = filter_links_by_text(
+        embedded_links,
+        contact_block,
+    )
     contact_details = merge_contact_details(
-        extract_contacts_from_text(raw_text),
+        extract_contacts_from_text(
+            raw_text,
+            include_links=False,
+        ),
         {
-            "links": embedded_links,
+            "links": extract_contacts_from_text(
+                contact_block,
+                include_links=True,
+            ).get("links", []),
+        },
+        {
+            "links": contact_embedded_links,
         },
     )
 
-    linked_text = raw_text.strip()
-
-    if embedded_links:
-        linked_text += "\n\nEmbedded PDF links:\n"
-        linked_text += "\n".join(
-            f"- [{link['label']}]({link['url']})"
-            for link in embedded_links
-        )
-
     return {
-        "text": linked_text.strip(),
+        "text": raw_text.strip(),
         "plain_text": raw_text.strip(),
+        "contact_block": contact_block,
         "contact_details": contact_details,
         "embedded_links": embedded_links,
     }
@@ -516,11 +653,23 @@ def enrich_resume_data_with_pdf_context(
     metadata = resume_data.setdefault("metadata", {})
 
     contacts = pdf_context.get("contact_details", {})
+    contact_link_urls = {
+        normalize_url(link.get("url", "")).lower()
+        for link in as_list(contacts.get("links", []))
+        if isinstance(link, dict)
+    }
+    existing_links = [
+        link
+        for link in as_list(basics.get("links", []))
+        if isinstance(link, dict)
+        and normalize_url(link.get("url", "")).lower()
+        in contact_link_urls
+    ]
 
     existing_contacts = {
         "emails": basics.get("emails", []),
         "phones": basics.get("phones", []),
-        "links": basics.get("links", []),
+        "links": existing_links,
     }
 
     merged_contacts = merge_contact_details(
@@ -858,10 +1007,70 @@ def format_link_contact(link: dict) -> str:
     return make_anchor(visible_label, url)
 
 
+def render_structured_links(value, fallback_label: str = "Link") -> str:
+    rendered = []
+
+    for link in as_list(value):
+        if isinstance(link, dict):
+            url = normalize_url(
+                link.get("url", "")
+                or link.get("href", "")
+                or link.get("link", "")
+            )
+            label = clean_link_label(
+                link.get("label", "")
+                or link.get("name", "")
+                or link.get("title", "")
+            )
+
+            if not url:
+                continue
+
+            if not label:
+                label = classify_link_label(
+                    url,
+                    fallback_label,
+                )
+
+            rendered.append(
+                make_anchor(
+                    safe_text(label),
+                    url,
+                )
+            )
+
+        elif isinstance(link, str):
+            text = safe_text(link)
+
+            if not text:
+                continue
+
+            if URL_RE.fullmatch(link.strip()):
+                rendered.append(
+                    make_anchor(
+                        text,
+                        link,
+                    )
+                )
+            else:
+                rendered.append(
+                    annotate_links(text)
+                )
+
+    return " • ".join(
+        item
+        for item in rendered
+        if item
+    )
+
+
 # =========================================================
 # PDF GENERATOR
 # =========================================================
 def generate_pdf_bytes(resume_data: dict) -> bytes:
+    resume_data = canonicalize_resume_data(
+        resume_data
+    )
 
     buffer = io.BytesIO()
 
@@ -952,62 +1161,138 @@ def generate_pdf_bytes(resume_data: dict) -> bytes:
     # CONTACT
     # =====================================================
 
+    contact_style = ParagraphStyle(
+        "Contact",
+        parent=body_style,
+        alignment=TA_CENTER,
+        fontSize=max(body_style.fontSize - 0.3, 7),
+        leading=body_style.leading,
+        textColor=colors.HexColor("#444444"),
+        spaceBefore=2,
+        spaceAfter=6,
+    )
+
     contact_parts = []
 
-    emails = as_list(basics.get(
-        "emails",
-        [],
-    ))
+    emails = as_list(
+        basics.get("emails", [])
+    )
 
-    phones = as_list(basics.get(
-        "phones",
-        [],
-    ))
+    phones = as_list(
+        basics.get("phones", [])
+    )
 
     location = basics.get(
         "location",
-        "",
+        ""
     )
 
-    links = as_list(basics.get(
-        "links",
-        [],
-    ))
+    links = as_list(
+        basics.get("links", [])
+    )
+
     email_values = {
         str(email or "").strip().lower()
         for email in emails
     }
+
     phone_values = {
         re.sub(r"\D", "", str(phone or ""))
         for phone in phones
     }
 
-    if emails:
-        contact_parts.extend(
-            [
-                format_email_contact(e)
-                for e in emails
-                if format_email_contact(e)
-            ]
-        )
+    # EMAILS
 
-    if phones:
-        contact_parts.extend(
-            [
-                format_phone_contact(p)
-                for p in phones
-                if format_phone_contact(p)
-            ]
-        )
+    for email in emails:
+
+        rendered = format_email_contact(email)
+
+        if rendered:
+            contact_parts.append(rendered)
+
+    # PHONES
+
+    for phone in phones:
+
+        rendered = format_phone_contact(phone)
+
+        if rendered:
+            contact_parts.append(rendered)
+
+    # LOCATION
 
     if location:
-        contact_parts.append(
-            render_linked_text(
-                location,
-                known_links,
+
+        rendered_location = render_linked_text(
+            location,
+            known_links,
+        )
+
+        if rendered_location:
+            contact_parts.append(rendered_location)
+
+    # LINKS
+
+    for link in links:
+
+        if not isinstance(link, dict):
+            continue
+
+        label = link.get("label", "")
+        url = link.get("url", "")
+
+        normalized_url = normalize_url(url)
+        lowered_url = normalized_url.lower()
+
+        # Skip duplicate email links
+        if lowered_url.startswith("mailto:"):
+
+            linked_email = lowered_url.replace(
+                "mailto:",
+                "",
+                1,
+            )
+
+            if linked_email in email_values:
+                continue
+
+        # Skip duplicate phone links
+        if lowered_url.startswith("tel:"):
+
+            linked_phone = re.sub(
+                r"\D",
+                "",
+                lowered_url,
+            )
+
+            if linked_phone in phone_values:
+                continue
+
+        rendered = format_link_contact(
+            {
+                "label": label,
+                "url": normalized_url,
+            }
+        )
+
+        if rendered:
+            contact_parts.append(rendered)
+
+    # FINAL RENDER
+
+    if contact_parts:
+
+        story.append(
+            Paragraph(
+                " &nbsp;&nbsp;•&nbsp;&nbsp; ".join(contact_parts),
+                contact_style,
+                bulletText=None,
             )
         )
 
+    story.append(
+        Spacer(1, section_gap)
+    )
     # =====================================================
     # LINKS
     # =====================================================
@@ -1321,10 +1606,38 @@ def generate_pdf_bytes(resume_data: dict) -> bytes:
                 "bullets",
                 "technologies",
             }
+            link_fields = {
+                "link",
+                "links",
+                "url",
+                "urls",
+                "website",
+                "repository",
+                "repo",
+                "github",
+                "demo",
+                "live",
+            }
 
             for key, value in item.items():
 
                 if key in ignored:
+                    continue
+
+                if key.lower() in link_fields:
+                    cleaned = render_structured_links(
+                        value,
+                        fallback_label=key,
+                    )
+
+                    if cleaned:
+                        story.append(
+                            Paragraph(
+                                cleaned,
+                                body_style,
+                            )
+                        )
+
                     continue
 
                 cleaned = render_linked_text(

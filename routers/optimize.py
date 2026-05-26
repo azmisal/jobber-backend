@@ -18,6 +18,10 @@ from services.llm_service import (
 )
 
 from utils.pdf_parser import generate_pdf_bytes
+from utils.resume_quality import (
+    canonicalize_resume_data,
+    cleanup_resume_data,
+)
 from services.cloudinary_service import upload_pdf
 
 router = APIRouter(
@@ -49,6 +53,9 @@ def fetch_target_keywords(
     resume_data = profile.get(
         "parsed_resume_data",
         {}
+    )
+    resume_data = canonicalize_resume_data(
+        resume_data
     )
 
     existing_skills = []
@@ -121,6 +128,9 @@ def fetch_proposals(
         "parsed_resume_data",
         {}
     )
+    resume_data = canonicalize_resume_data(
+        resume_data
+    )
 
     proposals = (
         generate_optimization_proposals(
@@ -158,6 +168,9 @@ def apply_optimization_and_finalize(
             "parsed_resume_data",
             {}
         )
+    )
+    optimized_resume = canonicalize_resume_data(
+        optimized_resume
     )
 
     approved_map = {
@@ -251,6 +264,10 @@ def apply_optimization_and_finalize(
                     prop.field
                 ] = prop.proposed_text
 
+    optimized_resume = cleanup_resume_data(
+        optimized_resume
+    )
+
     # GENERATE ATS PDF
 
     pdf_output_bytes = (
@@ -258,9 +275,6 @@ def apply_optimization_and_finalize(
             optimized_resume
         )
     )
-    print(type(pdf_output_bytes))
-    print(pdf_output_bytes)
-    print(len(pdf_output_bytes) if pdf_output_bytes else "EMPTY")
     unique_filename = (
             f"{payload.output_file_name}_"
             f"{current_user.user_id}"

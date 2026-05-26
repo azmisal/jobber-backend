@@ -5,6 +5,10 @@ from utils.pdf_parser import (
     enrich_resume_data_with_pdf_context,
     extract_resume_pdf_context,
 )
+from utils.resume_quality import (
+    canonicalize_resume_data,
+    cleanup_resume_data,
+)
 from utils.auth_helpers import get_current_user
 from models.auth import TokenData
 from services.cloudinary_service import upload_pdf
@@ -32,13 +36,15 @@ async def upload_and_parse(
     pdf_context = extract_resume_pdf_context(file_bytes)
 
     parsed_json = parse_resume_to_json(
-        pdf_context["text"],
+        pdf_context["plain_text"],
         model,
+        pdf_context.get("embedded_links", []),
     )
     parsed_json = enrich_resume_data_with_pdf_context(
         parsed_json,
         pdf_context,
     )
+    parsed_json = cleanup_resume_data(parsed_json)
 
     profile_record = {
         "user_id": current_user.user_id,
@@ -66,8 +72,12 @@ def get_profile(current_user: TokenData = Depends(get_current_user), db=Depends(
 @router.put("/rectify")
 def rectify_profile(updated_data: ResumeDataSchema, current_user: TokenData = Depends(get_current_user), db=Depends(get_db)):
     """One-time rectification to update and verify parsed resume data in the database."""
+    cleaned_data = canonicalize_resume_data(
+        updated_data.model_dump()
+    )
+
     db.profiles.update_one(
         {"user_id": current_user.user_id},
-        {"$set": {"parsed_resume_data": updated_data.model_dump()}}
+        {"$set": {"parsed_resume_data": cleaned_data}}
     )
     return {"message": "Profile updated and verified successfully"}
